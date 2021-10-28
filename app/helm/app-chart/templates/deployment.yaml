@@ -1,0 +1,63 @@
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: regcred
+  namespace: {{ .Release.Namespace }}
+data:
+  .dockerconfigjson: {{ .Values.secret }}
+type: kubernetes.io/dockerconfigjson
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: python-deployment
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: hello-python
+spec:
+{{ if .Values.replicas }}
+  replicas: {{ .Values.replicas }}
+{{ else }}
+  replicas: 1
+{{ end }}
+  selector:
+    matchLabels:
+      app: hello-python
+  template:
+    metadata:
+      labels:
+        app: hello-python
+    spec:
+      containers:
+      - name: hello-python
+        image: {{ .Values.image }}
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          tcpSocket:
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 20
+      imagePullSecrets:
+        - name: regcred
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-svc
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: hello-python
+spec:
+  selector:
+    app: hello-python
+  ports:
+    - protocol: TCP
+      port: 8080
+---

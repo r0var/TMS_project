@@ -1,0 +1,7 @@
+apiVersion: v1
+name: app
+version: 0.0.1
+
+maintainers: 
+  - name: "r0var"
+    email: "r0var@outlook.com"

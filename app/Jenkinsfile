@@ -1,0 +1,106 @@
+pipeline {
+  agent any
+
+  environment {
+    REPLICAS = 3
+    KUBECONFIG = "${JENKINS_HOME}/.kube/test.conf"
+    registry = "r0var/r0var-test" 
+    registryCredential = 'docker_login' 
+    dockerImage = ''
+    SHORT_COMMIT = "${GIT_COMMIT[0..7]}"
+    NS = "test"
+    DOCKER_SECRET = credentials('docker_config')
+    notification_channel = '#jenkins'
+  }
+
+  stages {
+    stage('Test python code') {
+      steps {
+        sh 'pylint app.py'
+      }
+    }
+    stage('Building our image') { 
+      steps { 
+        script { 
+          dockerImage = docker.build registry + ":$SHORT_COMMIT" 
+        }
+      } 
+    }
+    stage('Test docker image') {
+      steps {
+        sh "docker run -d --name myapp --rm $registry:$SHORT_COMMIT"
+        script {
+          CONTAINER_IP = sh (
+            script: "docker inspect -f '{{ .NetworkSettings.IPAddress }}' myapp",
+            returnStdout: true
+          ).trim()
+        }
+        sleep(time: 10, unit: "SECONDS")
+        sh "docker ps"
+        echo "$CONTAINER_IP"
+        sh "docker run --rm curlimages/curl $CONTAINER_IP:8080"
+        sh "docker stop myapp"
+      }
+    }
+    stage('Deploy our image') { 
+      steps { 
+        script { 
+          docker.withRegistry( '', registryCredential ) { 
+            dockerImage.push() 
+          }
+        } 
+      }
+    } 
+    stage('Test deploy') {
+      steps {
+        dir("helm") {
+          sh '''
+              helm upgrade --install app app-chart/ -n $NS --create-namespace \\
+              --set image=\\"$registry:$SHORT_COMMIT\\" \\
+              --set secret=\\"$DOCKER_SECRET\\"
+              '''
+          
+        }
+      }
+    }
+    stage('Test app') {
+      steps {
+        sh """
+           kubectl get pods -n $NS
+           kubectl -n $NS run curler --image=curlimages/curl sleep 60
+           sleep 15
+           kubectl exec -n $NS -i curler -- curl my-svc:8080
+           kubectl delete pod -n $NS curler
+           """
+        slackSend(channel: "$notification_channel", 
+          message: "The app has tested successfully! Job $JOB_NAME build $BUILD_NUMBER", 
+          sendAsText: true
+        )
+      }
+    }
+    stage('Deploy app') {
+      steps {
+        dir("helm") {
+          sh "pwd"
+          sh '''
+              helm upgrade --install app app-chart/ \\
+              --set image=\\"$registry:$SHORT_COMMIT\\" \\
+              --set secret=\\"$DOCKER_SECRET\\" \\
+              --set replicas=$REPLICAS
+              '''
+          sh "kubectl get pods"
+          
+        }
+      }
+    }
+
+  }
+  post {
+    always {
+        slackSend ( channel: "${notification_channel}",
+            message: "*${currentBuild.currentResult}:* Job $JOB_NAME build $BUILD_NUMBER\n More info at: $BUILD_URL",
+            sendAsText: true
+        )
+    }
+  }
+}

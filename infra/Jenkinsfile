@@ -1,0 +1,121 @@
+pipeline {
+
+  agent any
+
+  environment {
+    TF_VAR_k8s_env = 'test'
+    TF_VAR_instance_count = '0'
+    TF_VAR_linode_token = credentials('linode_token')
+    TF_VAR_my_ssh_key = credentials('ssh_my_public_key')
+    SSH_PRIVATE_KEY = credentials('kube_ssh_key')
+    AWS_ACCESS_KEY_ID = credentials('linode_access_key')
+    AWS_SECRET_ACCESS_KEY = credentials('linode_secret_key')
+    KUBECONFIG = "${JENKINS_HOME}/.kube/${TF_VAR_k8s_env}.conf"
+    notification_channel = '#jenkins'
+  }
+  stages {
+    stage('Validate terraform') {
+      steps {
+        sh 'terraform validate'
+      }
+    }
+    stage('Terraform Init') {
+      steps {
+        sh """
+           terraform init 
+           """
+      }
+    }
+    stage('Terraform Plan') {
+      steps {
+        sh """
+           terraform plan -out tfplan 
+           """
+      }
+    }
+    stage('Terrafrom Apply') {
+      steps {
+        slackSend(channel: "$notification_channel", message: "Do you approve deployment? $BUILD_URL", sendAsText: true)
+        input 'Apply Plan'
+        sh """
+           terraform apply tfplan
+           """
+      }
+    }
+    stage('Check cluster existence') {
+      when {
+        expression {
+          return env.TF_VAR_instance_count > '0';
+        }
+      }
+      steps {
+        script {
+          try {
+            timeout(time: 5, unit: 'SECONDS') {
+              sh 'kubectl get nodes'
+              PLAYBOOK_NAME = "scale.yml"
+            }
+          }
+          catch(all) {
+            PLAYBOOK_NAME = "cluster.yml"
+          }
+        }
+      }
+    }
+    stage('Run kubespray') {
+      when {
+        expression {
+          return env.TF_VAR_instance_count > '0';
+        }
+      }
+      steps {
+        dir("kubespray") {
+          retry(6) {
+            sleep(time: 10, unit: "SECONDS")
+            sh "ansible all -i ../inventory.ini -m ping -u root --private-key ${env.SSH_PRIVATE_KEY}"
+          }
+        }
+        ansiblePlaybook (
+          playbook: "kubespray/${PLAYBOOK_NAME}",
+          inventory: "inventory.ini",
+          credentialsId: 'kube_ssh_key',
+          extraVars: [
+            kubeconfig_localhost: 'true',
+            cluster_name: "k8s-${TF_VAR_k8s_env}-cluster"
+          ]
+        )
+      }
+    }
+    stage('Test k8s cluster') {
+      when {
+        expression {
+          return env.TF_VAR_instance_count > '0';
+        }
+      }
+      steps {
+        sh "cp -f artifacts/admin.conf ${JENKINS_HOME}/.kube/${TF_VAR_k8s_env}.conf"
+        sh 'kubectl get nodes'
+        sh 'kubectl config get-contexts'
+      }
+    }
+    stage('Archive') {
+      when {
+        expression {
+          return env.TF_VAR_instance_count > '0';
+        }
+      }
+      steps {
+        archiveArtifacts "artifacts/admin.conf"
+      }
+    }
+  }
+
+  post {
+      always {
+          slackSend ( channel: "${notification_channel}",
+              message: "*${currentBuild.currentResult}:* Job $JOB_NAME build $BUILD_NUMBER\n More info at: $BUILD_URL",
+              sendAsText: true
+          )
+      }
+  }
+}
