@@ -10,7 +10,10 @@ volumes:
 services:
 
   jenkins:
-    image: jenkins:v3
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: jenkins:my
     restart: always
     networks:
       - jenkins

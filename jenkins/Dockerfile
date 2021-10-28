@@ -56,7 +56,7 @@ RUN apt-get update && apt-get install -y apt-transport-https \
   && pip3 install boto3 \
     botocore \
       # ansible==${ANSIBLE_VERSION} \
-    molecule \
+    # molecule \
     awscli \
     cryptography \
     netaddr \
